@@ -1442,7 +1442,7 @@ if __name__ == '__main__':
                if '{}-{}'.format(mol_i, mol_j) == each_perturbation]
         if not key:
             if arguments.no_checks:
-                if not 'no_progress' in saved_data:
+                if 'no_progress' not in saved_data:
                     os_util.local_print('Failed to find a egde for {} in the perturbation graph. Because you are '
                                         'using no_checks, I will try to create a new edge on the graph and try to '
                                         'move on.'.format(each_perturbation), current_verbosity=arguments.verbose,
