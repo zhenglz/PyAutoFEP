@@ -1011,7 +1011,7 @@ class TopologyData:
                 os_util.local_print('Error while parsing dihedral line {} in molecule {} with error {}'
                                     ''.format(dihedral_string, molecule_type, error),
                                     msg_verbosity=os_util.verbosity_level.error)
-                raise TypeError('[ERROR] Could not understand dihedral line {}'.format(dihedral_string))
+                raise TypeError('Could not understand dihedral line {}'.format(dihedral_string))
             else:
                 molecule_type.dihe_dict.append(this_dihedral)
                 molecule_type.output_sequence.append(molecule_type.dihe_dict[-1])
@@ -1041,7 +1041,7 @@ class TopologyData:
                 os_util.local_print('Error while parsing constraint line {} in molecule {} with error {}'
                                     ''.format(this_constraint_data, molecule_type, error),
                                     msg_verbosity=os_util.verbosity_level.error)
-                raise TypeError('[ERROR] Could not understand constraint line {}'.format(constraint_string))
+                raise TypeError('Could not understand constraint line {}'.format(constraint_string))
             else:
                 molecule_type.constraints_dict.append(this_constraint)
                 molecule_type.output_sequence.append(molecule_type.constraints_dict[-1])
@@ -1230,6 +1230,13 @@ class TopologyData:
 
             # Ignore empty, comment lines or macros
             if (len(each_line) == 0) or (each_line[0] in [';', '#']):
+                if each_line.startswith('#include'):
+                    os_util.local_print('#include directive found in file {}. This is not supported. Suppressing '
+                                        'import. Should the topology generation fail, double check your topology.'
+                                        ''.format(topology_files),
+                                        msg_verbosity=os_util.verbosity_level.warning,
+                                        current_verbosity=verbosity)
+                    raw_line = '; ' + raw_line + ' ; Suppressed, imports not allowed in ligand topology'
                 try:
                     actual_moleculetype.output_sequence.append(raw_line)
                 except (UnboundLocalError, AttributeError):
@@ -1238,9 +1245,10 @@ class TopologyData:
                 continue
 
             # Test whenever a new declaration has started and update file_marker
-            this_directive = re.match('(?:\[\s+)(.*)(?:\s+\])', each_line)
+            this_directive = re.match('(?:\[\s+)(.*)(?:\s+\])', each_line, flags=re.IGNORECASE)
             if this_directive is not None:
-                if this_directive.group(1) == 'moleculetype':
+                cur_directive = this_directive.group(1).lower()
+                if cur_directive == 'moleculetype':
                     os_util.local_print('Reading molecule type directive',
                                         msg_verbosity=os_util.verbosity_level.debug, current_verbosity=verbosity)
                     self.output_sequence.append(self.MoleculeTypeData(self))
@@ -1248,7 +1256,7 @@ class TopologyData:
                     self.molecules.append(self.output_sequence[-1])
                     actual_moleculetype.output_sequence.append(raw_line)
                     file_marker = None
-                elif this_directive.group(1) in ['system', 'molecules', 'defaults']:
+                elif cur_directive in ['system', 'molecules', 'defaults']:
                     # system also ends moleculetypes
                     os_util.local_print("Suppressing [ {} ] directive of file {}".format(this_directive.group(1),
                                                                                          topology_files),
@@ -1257,22 +1265,22 @@ class TopologyData:
                                                 ''.format(raw_line.rstrip('\n'), this_directive.group(1)))
                     actual_moleculetype = None
                     file_marker = supress_code
-                elif this_directive.group(1) == 'atomtypes':
+                elif cur_directive == 'atomtypes':
                     os_util.local_print("Reading directive atomtypes from {}".format(topology_files),
                                         msg_verbosity=os_util.verbosity_level.debug, current_verbosity=verbosity)
                     file_marker = 'atomtypes'
                     self.output_sequence.append(raw_line)
-                elif this_directive.group(1) in molecule_directives:
+                elif cur_directive in molecule_directives:
                     os_util.local_print("Reading directive {} in molecule {} of file {}"
                                         "".format(each_line, actual_moleculetype.name, topology_files),
                                         msg_verbosity=os_util.verbosity_level.debug, current_verbosity=verbosity)
-                    file_marker = molecule_directives[this_directive.group(1)]
+                    file_marker = molecule_directives[cur_directive]
                     actual_moleculetype.output_sequence.append(raw_line)
-                elif this_directive.group(1) in type_directives:
+                elif cur_directive in type_directives:
                     os_util.local_print("Reading type directive {} from file {}"
                                         "".format(each_line, topology_files),
                                         msg_verbosity=os_util.verbosity_level.debug, current_verbosity=verbosity)
-                    file_marker = type_directives[this_directive.group(1)]
+                    file_marker = type_directives[cur_directive]
                     self.output_sequence.append('; {} Directive suppressed and all parameters inlined to molecules. '
                                                 'Dual topology code does not support online parameters\n'
                                                 ''.format(raw_line.rstrip('\n')))
@@ -1367,7 +1375,7 @@ class TopologyData:
             return_str = []
             for each_element in self.output_sequence:
                 if isinstance(each_element, self.__atomtype_data) or \
-                        re.match('(?:\[\s+)(atomtypes)(?:\s+\])', str(each_element)) is not None:
+                        re.match('(?:\[\s+)(atomtypes)(?:\s+\])', str(each_element), flags=re.IGNORECASE) is not None:
                     continue
                 else:
                     return_str.append(each_element.__str__())
@@ -1674,6 +1682,163 @@ class MCSResult(dict):
             str_repr = '[MCS: '', canceled = True]'
         return str_repr
 
+
+class PDBFile:
+
+    class PDBResidue(list):
+        """ Index atoms belonging to the same residue """
+        def __init__(self, resname=''):
+            super(PDBFile.PDBResidue, self).__init__()
+            self.resname = resname
+
+        def append(self, newatom) -> None:
+            super(PDBFile.PDBResidue, self).append(newatom)
+            if not self.resname:
+                self.resname = newatom.resname
+            newatom.residue = self
+
+        def __str__(self):
+            return '<Residue {} containing {} atoms>'.format(self.resname, len(self))
+
+        @property
+        def first_line(self):
+            return self[0].line_num
+
+        @property
+        def lines(self):
+            return [i.line_num for i in self]
+
+        def get_atom_names(self):
+            return [i.name.replace(' ', '') for i in self]
+
+        def update_atoms(self):
+            for each_atom in self:
+                each_atom.resname = self.resname
+
+    class PDBAtom:
+        """ A class to store PDB atoms, reads atom lines following the PDB structure:
+        (from http://www.wwpdb.org/documentation/file-format-content/format33/sect9.html#ATOM)
+        # COLUMNS        DATA  TYPE    FIELD        DEFINITION
+        # -------------------------------------------------------------------------------------
+        #  1 -  6        Record name   "ATOM  "
+        #  7 - 11        Integer       serial       Atom  serial number.
+        # 13 - 16        Atom          name         Atom name.
+        # 17             Character     altLoc       Alternate location indicator.
+        # 18 - 20        Residue name  resName      Residue name.
+        # 22             Character     chainID      Chain identifier.
+        # 23 - 26        Integer       resSeq       Residue sequence number.
+        # 27             AChar         iCode        Code for insertion of residues.
+        # 31 - 38        Real(8.3)     x            Orthogonal coordinates for X in Angstroms.
+        # 39 - 46        Real(8.3)     y            Orthogonal coordinates for Y in Angstroms.
+        # 47 - 54        Real(8.3)     z            Orthogonal coordinates for Z in Angstroms.
+        # 55 - 60        Real(6.2)     occupancy    Occupancy.
+        # 61 - 66        Real(6.2)     tempFactor   Temperature  factor.
+        # 77 - 78        LString(2)    element      Element symbol, right-justified.
+        # 79 - 80        LString(2)    charge       Charge  on the atom.
+        """
+        def __init__(self, atom_line, line_num):
+            self.line_num = line_num
+            self.residue = None
+            atom_line = atom_line.ljust(80)
+            self.record_name = atom_line[0:6]
+            self.serial = int(atom_line[6:11])
+            self.name = atom_line[12:16]
+            self.alt_loc = atom_line[16]
+            self.resname = atom_line[17:20]
+            self.chain = atom_line[21]
+            self.res_seq = int(atom_line[22:26])
+            self.i_code = atom_line[26]
+            self.coords = [float(atom_line[30:38]), float(atom_line[38:46]), float(atom_line[46:54])]
+            self.occupancy = float(atom_line[54:60])
+            self.beta_temp = float(atom_line[60:66])
+            self.element = atom_line[76:78]
+            self.charge = atom_line[78:80]
+
+        def to_line(self):
+            ret_line = '{:6s}{:5d} {:^4s}{:1s}{:3s} {:1s}{:4d}{:1s}   {:8.3f}{:8.3f}{:8.3f}{:6.2f}{:6.2f}' \
+                       '          {:>2s}{:2s}\n' \
+                       ''.format(self.record_name, self.serial, self.name, self.alt_loc, self.resname, self.chain,
+                                 self.res_seq, self.i_code, *self.coords, self.occupancy, self.beta_temp, self.element,
+                                 self.charge)
+            return ret_line
+
+    def __init__(self, input_file):
+        """ Very simple class to read PDB files """
+        self.atoms = []
+        self.residues = []
+        self.file_lines = []
+        self.input_file = input_file
+
+        self.read_file(self.input_file)
+
+    def read_file(self, input_file):
+        """ Reads a PDB file, parsing atoms and grouping residues
+        """
+        if isinstance(input_file, str):
+            self.file_lines = os_util.read_file_to_buffer(input_file, die_on_error=True, return_as_list=True,
+                                                          error_message='Failed to read PDB file {}.')
+        else:
+            self.file_lines = input_file
+
+        new_res = True
+        for line_num, each_line in enumerate(self.file_lines):
+            if len(each_line) > 54 and (each_line[0:4] == 'ATOM' or each_line[0:6] == 'HETATM'):
+                try:
+                    atom_serial = int(each_line[6:11])
+                except ValueError as err:
+                    os_util.local_print('Failed to convert atom number {} to an integer at line {} of pdb file {}.'
+                                        ''.format(each_line[6:11], line_num, input_file),
+                                        msg_verbosity=os_util.verbosity_level.error)
+                    raise ValueError(err)
+                this_atom = PDBFile.PDBAtom(each_line, line_num)
+                self.atoms.append(this_atom)
+                if new_res or this_atom.res_seq != self.residues[-1][-1].res_seq:
+                    this_res = PDBFile.PDBResidue(this_atom.resname)
+                    this_res.append(this_atom)
+                    self.residues.append(this_res)
+                    new_res = False
+                else:
+                    self.residues[-1].append(this_atom)
+                self.file_lines[line_num] = this_atom
+
+            if len(each_line) >= 3 and each_line[0:3] == 'TER':
+                new_res = True
+
+    def update_atom_lines(self):
+        """ Updates the serial field [6:11] of all atoms
+        """
+        for n, each_atom in enumerate(self.atoms):
+            each_atom.serial = n + 1
+            self.file_lines[each_atom.line_num] = each_atom.to_line()
+
+    def update_atoms_from_lines(self):
+        """ Updates the atoms line_num from self.file_lines
+        """
+        tmp_atom_list = []
+        for n, each_line in enumerate(self.file_lines):
+            if isinstance(each_line, PDBFile.PDBAtom):
+                each_line.line_num = n
+                tmp_atom_list.append(each_line)
+        self.atoms = tmp_atom_list
+
+    def to_file(self, output_file, output_connect=False):
+        output_data = []
+        for each_line in self.file_lines:
+            if (not output_connect) and isinstance(each_line, str) and each_line.startswith('CONECT'):
+                continue
+
+            if isinstance(each_line, PDBFile.PDBAtom):
+                output_data.append(each_line.to_line())
+            else:
+                output_data.append(each_line)
+
+        with open(output_file, 'w') as fh:
+            fh.writelines(output_data)
+
+    def __str__(self):
+        fname = self.input_file if isinstance(self.input_file, str) else '<DataStream>'
+        description = '<PDBFile {} with {} residues and {} atoms>'.format(fname, len(self.residues), len(self.atoms))
+        return description
 
 mergedtopologies_class = namedlist('MergedTopologies', ['dual_topology', 'dual_molecule', 'mcs', 'common_core_mol',
                                                         'molecule_a', 'topology_a', 'molecule_b', 'topology_b',

@@ -34,6 +34,7 @@ import tarfile
 import configparser
 import itertools
 from collections import OrderedDict
+from copy import copy
 
 import all_classes
 import process_user_input
@@ -217,6 +218,7 @@ def prepare_complex_system(structure_file, base_dir, ligand_dualmol, topology='F
     build_files_dict['final_structure_file'] = 'FullSystem.pdb'
 
     output_structure_file = build_files_dict['final_structure_file']
+    output_topology_file = build_files_dict['full_topology_file']
 
     os_util.local_print('These are the files to be used during automatic system building: {}'
                         ''.format(', '.join(build_files_dict.values())),
@@ -303,7 +305,8 @@ def prepare_complex_system(structure_file, base_dir, ligand_dualmol, topology='F
         raise SystemExit(1)
     [system_topology_list.insert(position + 2, each_line) for each_line in ligatoms_list]
 
-    position = os_util.inner_search('[ system ]', system_topology_list, apply_filter=';')
+    fn_match = re.compile(r'\s*\[\s+system\s+]').match
+    position = os_util.inner_search(fn_match, system_topology_list, apply_filter=';')
     if position is False:
         new_file_name = os.path.basename(build_files_dict['protein_top'])
         shutil.copy2(build_files_dict['protein_top'], new_file_name)
@@ -328,10 +331,10 @@ def prepare_complex_system(structure_file, base_dir, ligand_dualmol, topology='F
     #   components (eg, water, ions) are found.
     copyfiles = {}
     molname = 'protein_step1_{}'.format(timestamp)
-    search_fn = re.compile(r'#include\s+\"' + molname + r'_[a-zA-Z0-9_-]+\.itp\"')
+    search_fn = re.compile(r'#include\s+\"' + molname + r'_[a-zA-Z0-9_-]+\.itp\"', flags=re.IGNORECASE)
     position = os_util.inner_search(search_fn.match, system_topology_list, apply_filter=';')
     if position is False:
-        search_fn = re.compile(r'\s*\[\s+moleculetype\s+]')
+        search_fn = re.compile(r'\s*\[\s+moleculetype\s+]', flags=re.IGNORECASE)
         if os_util.inner_search(search_fn.match, system_topology_list, apply_filter=';') is False:
             new_file_name = os.path.basename(build_files_dict['protein_top'])
             shutil.copy2(build_files_dict['protein_top'], new_file_name)
@@ -370,14 +373,14 @@ def prepare_complex_system(structure_file, base_dir, ligand_dualmol, topology='F
                 raise SystemExit(1)
 
     # 2.5.2 Tries to find restraint files in the topology (this is the case for a single protein chain)
-    search_fn = re.compile(r'#ifdef POSRES\s')
+    search_fn = re.compile(r'#ifdef POSRES\s', flags=re.IGNORECASE)
     position = os_util.inner_search(search_fn.match, system_topology_list, apply_filter=';')
     if position is not False:
         for each_line in system_topology_list[position + 1:]:
             each_line = each_line.lstrip()
             if each_line.startswith(';'):
                 continue
-            if each_line.startswith('#include'):
+            if each_line.lower().startswith('#include'):
                 this_filename = re.findall(r'"\w+.itp"', each_line)
                 try:
                     this_filename = this_filename[0]
@@ -396,7 +399,7 @@ def prepare_complex_system(structure_file, base_dir, ligand_dualmol, topology='F
                     dest_file_name = os.path.join(build_system_dir, this_filename)
                     shutil.move(this_filename, dest_file_name)
                     copyfiles[dest_file_name] = this_filename
-            elif each_line.startswith('#endif'):
+            elif each_line.lower().startswith('#endif'):
                 break
 
     # 2.5.2 From protein topology files, tries to read position restraints files and add them to copyfile dict
@@ -470,7 +473,7 @@ def prepare_complex_system(structure_file, base_dir, ligand_dualmol, topology='F
     gmx_data = os_util.run_gmx(gmx_bin, grompp_list, '', build_files_dict['grompp_log'], die_on_error=False,
                                verbosity=verbosity)
     if gmx_data.code != 0:
-        if os_util.inner_search('number of coordinates in coordinate file', gmx_data.stderr) is False:
+        if re.findall('number of coordinates in coordinate file', gmx_data.stderr) is not False:
             os_util.local_print('Failed to run {} {}. Error code {}.\nCommand line was: {}\n\nstdout:\n{}\n\n'
                                 'stderr:\n{}\n\n{}\nThis is likely caused by a failing to edit the intermediate '
                                 'topology file {}. Rerunning with output_hidden_temp_dir=False may solve this issue.'
@@ -531,7 +534,8 @@ def prepare_complex_system(structure_file, base_dir, ligand_dualmol, topology='F
                             msg_verbosity=os_util.verbosity_level.debug, current_verbosity=verbosity)
         shutil.copy2(each_source, os.path.join(base_dir, 'protein', each_dest))
 
-    return all_classes.Namespace({'build_dir': build_system_dir, 'structure': output_structure_file})
+    return all_classes.Namespace({'build_dir': build_system_dir, 'structure': output_structure_file,
+                                  'topology': output_topology_file})
 
 
 def prepare_output_scripts_data(header_template=None, script_type='bash', submission_args=None,
@@ -781,9 +785,9 @@ def parse_input_molecules(input_data, verbosity=0):
                 else:
                     input_data = temp_dict
             except FileNotFoundError:
-                os_util.verbosity_level('Could not parse input ligand data "{}". Please see documentation'
-                                        ''.format(input_data),
-                                        current_verbosity=verbosity, msg_verbosity=os_util.verbosity_level.error)
+                os_util.local_print('Could not parse input ligand data "{}". Please see documentation'
+                                    ''.format(input_data),
+                                    current_verbosity=verbosity, msg_verbosity=os_util.verbosity_level.error)
                 raise SystemExit(1)
             else:
                 # Read the directory structure, add all files with the same name and different extensions to a value
@@ -805,9 +809,9 @@ def parse_input_molecules(input_data, verbosity=0):
         ligand_dict = {}
         [ligand_dict.setdefault(os.path.splitext(each_file)[0], []).append(each_file) for each_file in input_data]
     elif isinstance(input_data, dict):
-        ligand_dict = input_data
+        ligand_dict = {str(k): v for k, v in input_data.items()}
     elif input_data is None:
-        ligand_dict = None
+        ligand_dict = {}
     else:
         os_util.local_print('Failed to read molecules data from {}. Could not parse data with type {}.\nInput data '
                             ''.format(input_data, type(input_data)),
@@ -902,6 +906,21 @@ def parse_ligands_data(input_ligands, savestate_util=None, no_checks=False, verb
                                             ''.format(each_field, this_ext),
                                             msg_verbosity=os_util.verbosity_level.error, current_verbosity=verbosity)
                         raise SystemExit(-1)
+
+                    try:
+                        assert each_name == temp_mol.GetProp('_Name')
+                    except AssertionError:
+                        os_util.local_print('Molecule name read from {} is {}, while the ligand name is {}. Setting '
+                                            'molecule name to {}'
+                                            ''.format(each_field, temp_mol.GetProp('_Name'), each_name, each_name),
+                                            msg_verbosity=os_util.verbosity_level.warning, current_verbosity=verbosity)
+                        temp_mol.SetProp('_Name', each_name)
+                    except KeyError:
+                        os_util.local_print('Failed to read a molecule name from {}. Setting molecule name to {}'
+                                            ''.format(each_field, each_name),
+                                            msg_verbosity=os_util.verbosity_level.warning, current_verbosity=verbosity)
+                        temp_mol.SetProp('_Name', each_name)
+
                     new_dict['molecule'] = temp_mol
                 elif this_ext == '.pdb':
                     if not no_checks:
@@ -919,6 +938,7 @@ def parse_ligands_data(input_ligands, savestate_util=None, no_checks=False, verb
                                             msg_verbosity=os_util.verbosity_level.error,
                                             current_verbosity=verbosity)
                         new_dict['molecule'] = rdkit.Chem.MolFromPDBFile(each_field, removeHs=False)
+                        temp_mol.SetProp('_Name', each_name)
                 elif this_ext in ['.itp', '.atp', '.top', '.str']:
                     new_dict.setdefault('topology', []).append(each_field)
                 elif os.path.isdir(each_field):
@@ -1146,6 +1166,7 @@ def read_md_protein(structure_file, structure_format='', last_protein_atom=-1, v
             msg_string = '\n'.join(['{:=^30}'.format(' MD Data '), 'Loaded data from file {} using format {}'
                                                                    ''.format(structure_file, structure_format)])
             os_util.local_print(msg_string, msg_verbosity=os_util.verbosity_level.default, current_verbosity=verbosity)
+            protein_data.data['file_path'] = structure_file
             return protein_data
 
 
@@ -1172,7 +1193,7 @@ def align_ligands(receptor_structure, poses_input=None, poses_reference_structur
     """
     # TODO: read data from other docking programs (eg: autodock-vina, rdock and dock 3.7)
 
-    for k, v in {'seq_align_mat': 'blosum80', 'gap_penalty': -1}.items():
+    for k, v in {'seq_align_mat': 'BLOSUM80', 'gap_penalty': -1}.items():
         kwargs.setdefault(k, v)
 
     if not poses_input and pose_loader not in ['superimpose']:
@@ -1202,7 +1223,8 @@ def align_ligands(receptor_structure, poses_input=None, poses_reference_structur
 
         docking_receptor_mol = read_reference_structure(poses_reference_structure, verbosity=verbosity)
         docking_mol_local = extract_pdb_poses(poses_input, docking_receptor_mol,
-                                              ligand_residue_name=ligand_residue_name, verbosity=verbosity)
+                                              ligand_residue_name=ligand_residue_name, save_state=save_state,
+                                              verbosity=verbosity)
 
     elif pose_loader == 'autodock4':
         # This loader loads data from autodock4 output, it tries to detect results files and receptor, but can be given
@@ -1335,6 +1357,8 @@ def make_index(new_index_file, structure_data, index_data=None, method='internal
     :param int verbosity: verbosity level
     """
 
+    if index_data is None:
+        index_data = {}
     os_util.local_print('Entering make_index: new_index_file={}, structure_data={}, index_data={}, method={}, '
                         'gmx_bin={}, verbosity={}'
                         ''.format(new_index_file, structure_data, index_data, method, gmx_bin, verbosity),
@@ -1360,13 +1384,11 @@ def make_index(new_index_file, structure_data, index_data=None, method='internal
                           'Protein_LIG': 'protein or resname {}'.format(ligand_name),
                           'Water_and_ions': 'resname SOL or resname NA or resname CL or resname K'}
 
-        index_input = default_groups
-        if index_data is not None:
-            [index_input.update({k: v}) for k, v in default_groups.items() if k not in index_data]
+        [default_groups.setdefault(k, v) for k, v in index_data.items()]
 
         # Generate a group per item in index_data and writes to new_index_file
         with MDAnalysis.selections.gromacs.SelectionWriter(new_index_file, mode='w') as ndx:
-            for each_name, each_selection in index_data.items():
+            for each_name, each_selection in default_groups.items():
                 this_selection = structure_data.select_atoms(each_selection)
                 if this_selection.n_atoms == 0:
                     os_util.local_print('The index group {} created from the selection "{}" would be empty and will '
@@ -1593,7 +1615,7 @@ def prepare_water_system(dual_molecule_ligand, water_dir, topology_file, protein
                                                        error_message='Failed to read system topology file.',
                                                        verbosity=verbosity)
 
-    molecules_pattern = re.compile(r'\[\s+molecules\s+\]')
+    molecules_pattern = re.compile(r'\[\s+molecules\s+\]', flags=re.IGNORECASE)
     water_topology_list = None
     for line_number, each_line in enumerate(system_topology_list):
         if molecules_pattern.match(each_line) is not None:
@@ -1646,9 +1668,10 @@ def prepare_water_system(dual_molecule_ligand, water_dir, topology_file, protein
                    '-c', build_files_dict['ligandsolv_pdb'], '-p', build_files_dict['ligandsolv_top'],
                    '-o', build_files_dict['genion_tpr'], '-maxwarn', str(gmx_maxwarn),
                    '-po', build_files_dict['mdout_mdp']]
-    gmx_data = os_util.run_gmx(gmx_bin, grompp_list, '', build_files_dict['grompp_log'], verbosity=verbosity)
+    gmx_data = os_util.run_gmx(gmx_bin, grompp_list, '', build_files_dict['grompp_log'], verbosity=verbosity,
+                               die_on_error=False)
     if gmx_data.code != 0:
-        if os_util.inner_search('number of coordinates in coordinate file', gmx_data.stderr) is False:
+        if re.findall('number of coordinates in coordinate file', gmx_data.stderr) is not False:
             os_util.local_print('Failed to run {} {}. Error code {}.\nCommand line was: {}\n\nstdout:\n{}\n\n'
                                 'stderr:\n{}\n\n{}\nThis is likely caused by a failing to edit the intermediate '
                                 'topology file {}. Rerunning with output_hidden_temp_dir=False may solve this issue.'
@@ -1751,8 +1774,8 @@ def create_fep_dirs(dir_name, base_pert_dir, new_files=None, extra_dir=None, ext
 
 
 def add_ligand_to_solvated_receptor(ligand_molecule, input_structure_file, output_structure_file, index_data,
-                                    input_topology='', output_topology_file='', num_protein_chains=1, radius=3,
-                                    selection_method='internal', ligand_name='LIG', verbosity=0):
+                                    input_topology='', output_topology_file='', radius=3, selection_method='internal',
+                                    ligand_name='LIG', input_structure_lig_name='LIG', verbosity=0):
     """ Adds the ligand ligand_molecule to the pre-solvated structure input_structure_file, relying in info from
     index_file. If provided, a topology file can be edited to reflect changes.
 
@@ -1762,59 +1785,65 @@ def add_ligand_to_solvated_receptor(ligand_molecule, input_structure_file, outpu
     :param dict index_data: Gromacs-style index file (used to mark last protein atom from output_structure_file)
     :param str input_topology: if provided, edits this topology to adjust the number of SOL molecules
     :param str output_topology_file: save topology to this file
-    :param int num_protein_chains: number of protein chains (only used in case of input_topology != '')
     :param float radius: exclude water molecule this close to the ligand (default: 3.0 A)
     :param str selection_method: use mdanalysis, sklearn or internal (default) selection method
     :param str ligand_name: use this as ligand name
+    :param str input_structure_lig_name: remove this molecule from the input_structure_file. Default: LIG
     :param int verbosity: verbosity level
     :rtype: bool
     """
 
+    # Get the index of the last protein atom from the index, ligand will be inserted after it
     last_protein_atom = index_data['Protein'][-1]
+
+    # Get the hydrid ligand as PDB
     # FIXME: remove the need for setting molecule_name
     dual_topology_pdb = merge_topologies.dualmol_to_pdb_block(ligand_molecule, molecule_name=ligand_name,
                                                               verbosity=verbosity)
+    dual_topology_pdb = all_classes.PDBFile(dual_topology_pdb.splitlines(keepends=True))
 
-    # TODO: proper handling of the protein selection
-    fullmd_data = os_util.read_file_to_buffer(input_structure_file, die_on_error=True, return_as_list=True,
-                                              error_message='Failed to read input structure file.',
-                                              verbosity=verbosity)
-    for line_number, each_line in enumerate(fullmd_data[last_protein_atom:]):
-        line_number += last_protein_atom
-        if len(each_line) < 54:
-            continue
-        else:
-            try:
-                test_atom = int(each_line[6:11])
-            except ValueError:
-                continue
-            else:
-                if test_atom == last_protein_atom:
-                    full_structure = fullmd_data[:line_number + 1]
-                    os_util.local_print('Will insert ligand {} after atom {} of the system in file {}.'
-                                        ''.format(ligand_molecule.dual_molecule_name, last_protein_atom,
-                                                  input_structure_file),
-                                        msg_verbosity=os_util.verbosity_level.info, current_verbosity=verbosity)
-                    break
-    else:
+    # Get the last atom of the protein
+    fullmd_data = all_classes.PDBFile(input_structure_file)
+    try:
+        last_protein_atom = fullmd_data.atoms[last_protein_atom - 1]
+    except KeyError as error:
         os_util.local_print('Could not find the end of the protein (atom {}) in file {}.'
                             ''.format(last_protein_atom, input_structure_file),
                             msg_verbosity=os_util.verbosity_level.error, current_verbosity=verbosity)
-        raise SystemExit(1)
+        raise KeyError(error)
 
-    for each_line in dual_topology_pdb.splitlines():
-        if len(each_line) > 1 and each_line.split()[0] in ('ATOM', 'HETATM'):
-            full_structure.extend('{}\n'.format(each_line))
+    # Add ligand atoms after the last protein atom
+    for i, each_atom in reversed(list(enumerate(dual_topology_pdb.atoms))):
+        each_atom.residue = None
+        fullmd_data.atoms.insert(fullmd_data.atoms.index(last_protein_atom) + 1, each_atom)
+        fullmd_data.file_lines.insert(last_protein_atom.line_num + 1, each_atom)
+    fullmd_data.update_atoms_from_lines()
 
-    full_structure.extend(fullmd_data[line_number + 1:])
-    with open(output_structure_file, 'w+') as outfile:
-        outfile.writelines(full_structure)
+    # Remove old ligand atoms, but do not touch added atoms
+    remove_atoms = []
+    for each_atom in fullmd_data.atoms:
+        if each_atom.resname.replace(' ', '') == input_structure_lig_name and each_atom not in dual_topology_pdb.atoms:
+            fullmd_data.file_lines[each_atom.line_num] = 'REMARK Atom {} {} {} suppressed, line {}\n' \
+                                                         ''.format(each_atom.name, each_atom.serial, each_atom.resname,
+                                                                   each_atom.line_num)
+            remove_atoms.append(each_atom)
+    for a in reversed(remove_atoms):
+        fullmd_data.atoms.remove(a)
+
+    fullmd_data.update_atom_lines()
+    fullmd_data.to_file(output_structure_file)
 
     # Remove clashing waters
     if selection_method == 'internal':
-        os_util.local_print('Internal selection method not implemented',
+        os_util.local_print('Internal selection method not implemented. Please, use selection_method=mdanalysis.',
                             msg_verbosity=os_util.verbosity_level.error, current_verbosity=verbosity)
         # FIXME: implement this
+        dist_cmd = ["pairdist", "-n", "index_data", "-f", "input_structure_file", "-ref",
+                    "'\"{}\"'".format(ligand_name), "-sel", "'\"water\"'", "-refgrouping", "none",
+                    "-selgrouping", "none"]
+        # os_util.run_gmx
+        # d0 = np.reshape(d, [42, -1, 3])
+
         raise SystemExit(1)
     elif selection_method == 'sklearn':
         from sklearn.metrics import pairwise_distances_argmin_min
@@ -1849,54 +1878,79 @@ def add_ligand_to_solvated_receptor(ligand_molecule, input_structure_file, outpu
     elif selection_method == 'mdanalysis':
         import MDAnalysis
 
-        lig_name = 'UNL'
         fullmd_data = MDAnalysis.Universe(output_structure_file)
 
         # Count clashing waters
         clashing_waters = fullmd_data.select_atoms("(byres around {:1.3} resname {}) and (resname SOL)"
-                                                   "".format(radius, lig_name)).n_residues
+                                                   "".format(radius, ligand_name)).n_residues
 
         # Construct the system without them
         new_system = fullmd_data.select_atoms("not ((byres around {:1.3} resname {}) and (resname SOL))"
-                                              "".format(radius, lig_name))
+                                              "".format(radius, ligand_name))
         with MDAnalysis.Writer(output_structure_file) as file_writer:
             file_writer.write(new_system)
 
-    # Edit topology to reflect the change in the number of water molecules
-    with open(input_topology, 'r') as file_handler:
-        topology_data = file_handler.readlines()
+    ## Edit topology to reflect the change in the number of water molecules
+    # Read topology and prepare the matches
+    topology_data = os_util.read_file_to_buffer(input_topology, return_as_list=True, die_on_error=True,
+                                                error_message='Failed to read input topology file when eddinting the '
+                                                              'topology of a pre-solvated system.')
 
+    fn_match = re.compile(r"\[\s+molecules\s+].*", re.IGNORECASE).match
+    fn_match_prot = re.compile(r"Protein", re.IGNORECASE).match
+    lnum = os_util.inner_search(fn_match, topology_data,
+                                apply_filter=lambda l: any([l.lstrip().startswith(i) for i in [';']]))
+
+    # Process the molecule lines
     new_topology_data = []
-    mol_found = False
-    prot_count = 0
-    for line_number, each_line in enumerate(topology_data):
-        if re.match(r"\[\s+molecules\s+].*", each_line) is not None:
-            new_topology_data.append(each_line)
-            mol_found = True
-        elif mol_found:
-            if (len(each_line) > 1) and (each_line[0] != ';'):
-                try:
-                    prot_count += int(each_line.split()[1])
-                except TypeError:
-                    os_util.local_print('Could not read line {} from file {}. This is the line text: {}'
-                                        ''.format(line_number, each_line, input_topology),
-                                        msg_verbosity=os_util.verbosity_level.error, current_verbosity=verbosity)
-                    raise SystemExit(1)
-                if prot_count == num_protein_chains:
-                    new_topology_data.append(each_line)
-                    new_topology_data.append('{}              1\n'.format(ligand_name))
-                elif each_line.split()[0] == 'SOL':
-                    new_water_count = int(each_line.split()[1]) - clashing_waters
-                    new_topology_data.append('SOL              {}\n'.format(new_water_count))
-                else:
-                    new_topology_data.append(each_line)
-            else:
-                new_topology_data.append(each_line)
+    for line_number, each_line in enumerate(topology_data[lnum + 1:]):
+        if each_line.lstrip().startswith(';'):
+            continue
+
+        try:
+            each_line = [each_line.split()[0], int(each_line.split()[1])]
+        except KeyError:
+            pass
         else:
             new_topology_data.append(each_line)
 
+    # Add the ligand molecule
+    lig_line = [ligand_name, 1]
+    found_str = [fn_match_prot(k) is not None for (k, j) in new_topology_data]
+
+    for n, i in enumerate(found_str):
+        if n >= 1 and i and found_str[n - 1] == False:
+            # There is a protein molecule after a non-protein molecule, this should not happen
+            os_util.local_print(
+                'A protein macromolecule was found after a non-protein molecule in topology file {}. This is '
+                'not supported. Make sure all protein molecules are grouped at the beginning of the system file.'
+                ''.format(input_topology),
+                msg_verbosity=os_util.verbosity_level.error, current_verbosity=verbosity)
+            raise SystemExit(0)
+    if any([k.lower() == ligand_name.lower() for (k, j) in new_topology_data]):
+        os_util.local_print('A molecule line for {} found in the topology file {}. I am not adding another one.'
+                            ''.format(ligand_name, input_topology),
+                            msg_verbosity=os_util.verbosity_level.warning, current_verbosity=verbosity)
+    elif not any(found_str):
+        os_util.local_print(
+            'No protein molecules found in topology file {}, which is odd. Make sure that this is indeed '
+            'what you want. Adding {} as first entry.'
+            ''.format(input_topology, ligand_name),
+            msg_verbosity=os_util.verbosity_level.warning, current_verbosity=verbosity)
+        new_topology_data.insert(0, lig_line)
+    else:
+        # Add the ligand line before the first non-protein molecule
+        new_topology_data.insert(found_str.index(False), lig_line)
+
+    # Edit the number of solvent molecules
+    for n, (k, j) in enumerate(new_topology_data[:]):
+        if k == 'SOL':
+            new_topology_data[n] = ['SOL', j - clashing_waters]
+
     with open(output_topology_file, 'w+') as file_handler:
-        file_handler.writelines(new_topology_data)
+        file_handler.writelines(topology_data[:lnum + 1])
+        file_handler.write('; Compound        #mols\n')
+        file_handler.writelines(['{:<20}{}\n'.format(i, j) for (i, j) in new_topology_data])
 
     os_util.local_print('Inserted ligand {} in system read from {}, removed {} waters and save the resulting system to '
                         '{} and topology to {}'.format(ligand_molecule.dual_molecule_name, input_structure_file,
@@ -2034,13 +2088,13 @@ def do_solute_scaling(solute_scaling_file, scale_value, scaled_atoms, scaling_bi
     for line_number, each_line in enumerate(input_data):
         if each_line[0] == ';' or each_line[0] == '\n':
             altered_topology.append(each_line)
-        elif re.match(r'\[\s+(.+)\s+\]', each_line) is not None:
+        elif re.match(r'\[\s+(.+)\s+\]', each_line, flags=re.IGNORECASE) is not None:
             altered_topology.append(each_line)
-            matched_str = re.match(r'\[\s+(.+)\s+\]', each_line).groups()[0]
-            if matched_str == 'moleculetype':
+            matched_str = re.match(r'\[\s+(.+)\s+\]', each_line, flags=re.IGNORECASE).groups()[0]
+            if matched_str.lower() == 'moleculetype':
                 # Flag to search for molecule name
                 actual_molecule = None
-            elif matched_str == 'atoms':
+            elif matched_str.lower() == 'atoms':
                 pass
             else:
                 # Just keep ignoring everything
@@ -2150,12 +2204,13 @@ def process_scaling_input(input_data, verbosity=0):
                         msg_verbosity=os_util.verbosity_level.debug, current_verbosity=verbosity)
 
     scaling_data = os_util.detect_type(input_data, test_for_dict=True, verbosity=verbosity)
-    if isinstance(input_data, dict):
+
+    if isinstance(scaling_data, dict):
         # User supplied a dict
         pass
-    elif isinstance(input_data, str):
+    elif isinstance(scaling_data, str):
         # User supplied a filename, read its contents then try to process as dict
-        file_data = os_util.read_file_to_buffer(input_data, die_on_error=True, return_as_list=False,
+        file_data = os_util.read_file_to_buffer(scaling_data, die_on_error=True, return_as_list=False,
                                                 error_message='Failed to read scaling selection file.'
                                                               '', verbosity=verbosity)
         scaling_data = os_util.detect_type(file_data, test_for_dict=True, verbosity=verbosity)
@@ -2182,6 +2237,9 @@ def process_scaling_input(input_data, verbosity=0):
                                         ''.format(each_atom, molecule_name),
                                         msg_verbosity=os_util.verbosity_level.error, current_verbosity=verbosity)
                     raise SystemExit(1)
+
+    os_util.local_print('This is the solute scaling selection: {}.'.format(scaling_data),
+                        msg_verbosity=os_util.verbosity_level.info, current_verbosity=verbosity)
 
     return scaling_data
 
@@ -2382,7 +2440,7 @@ def replace_multi_value_mdp(substitutions, mdp_data, no_checks=False, verbosity=
     """
 
     substitutions_groups = [('_TEMPERATURE', 'ref-t', 'tc-grps'), ('_PRESSURE', 'ref-p', 'pcoupltype')]
-    pressure_coulpe_num = {'isotropic': 1, 'semiisotropic': 2, 'anisotropic': 6, 'surface-tension': 2}
+    pressure_couple_num = {'isotropic': 1, 'semiisotropic': 2, 'anisotropic': 6, 'surface-tension': 2}
 
     for (alias_option, mdp_option, group_option) in substitutions_groups:
         if alias_option in substitutions:
@@ -2407,7 +2465,7 @@ def replace_multi_value_mdp(substitutions, mdp_data, no_checks=False, verbosity=
                 raise ValueError('Failed to parse mdp option {}'.format(group_option))
             else:
                 if alias_option == '_PRESSURE':
-                    num_tc_groups = pressure_coulpe_num.setdefault(group_line[0][0], False)
+                    num_tc_groups = pressure_couple_num.setdefault(group_line[0][0], False)
                     if not num_tc_groups:
                         os_util.local_print('Failed to parse {} data from mdp file. Please, check the mdp file.'
                                             ''.format(group_option),
@@ -2440,7 +2498,7 @@ def edit_mdp_file(mdp_file, substitutions, outfile=None, no_checks=False, verbos
 
     if not outfile:
         outfile = mdp_file
-        os_util.local_print('No outfile was suplied to edit_mdp_file. I will edit {} inplace.'.format(outfile),
+        os_util.local_print('No outfile was supplied to edit_mdp_file. I will edit {} inplace.'.format(outfile),
                             msg_verbosity=os_util.verbosity_level.debug, current_verbosity=verbosity)
 
     mdp_data = os_util.read_file_to_buffer(mdp_file, die_on_error=True, return_as_list=True,
@@ -2642,8 +2700,6 @@ if __name__ == '__main__':
                                     help='Use a pre-solvated structure (Default: no)')
     presolvated_system.add_argument('--presolvated_radius', type=float, default=None,
                                     help='Remove water molecules this close, in Angstroms, to ligand (Default: 1.0 A)')
-    presolvated_system.add_argument('--presolvated_protein_chains', type=int, default=None,
-                                    help='Number of distinct protein chains')
 
     perturbation_opts = Parser.add_argument_group('perturbation_options',
                                                   'Options used to control the perturbation scheme')
@@ -2737,7 +2793,7 @@ if __name__ == '__main__':
         if os.path.exists(arguments.perturbations_dir) and arguments.output_packing == 'dir':
             if not arguments.no_checks:
                 os_util.local_print('Output directory "{}" exists. Cannot continue. Remove/rename {} or use another '
-                                    'perturbation_dir. Alternatively, you can rerun with no_checks, so I will '
+                                    'perturbations_dir. Alternatively, you can rerun with no_checks, so I will '
                                     'overwrite the output directory.'
                                     ''.format(arguments.perturbations_dir, arguments.perturbations_dir),
                                     msg_verbosity=os_util.verbosity_level.error, current_verbosity=arguments.verbose)
@@ -2752,7 +2808,7 @@ if __name__ == '__main__':
             if os.path.exists(output_file) and arguments.output_packing == extension:
                 if not arguments.no_checks:
                     os_util.local_print('Output file "{}" exists (and you are using output_packing={}). Cannot '
-                                        'continue. Remove/rename {} or use another perturbation_dir. Alternatively, '
+                                        'continue. Remove/rename {} or use another perturbations_dir. Alternatively, '
                                         'you can rerun with no_checks, so I will overwrite the output file.'
                                         ''.format(output_file, arguments.output_packing, output_file),
                                         msg_verbosity=os_util.verbosity_level.error,
@@ -2945,7 +3001,8 @@ if __name__ == '__main__':
             raise SystemExit(1)
         else:
             solute_scaling_list = generate_scaling_vector(1.0, arguments.solute_scaling, len(lambda_dict['coulA']))
-            solute_scaling_atoms_dict = process_scaling_input(arguments.solute_scaling_selection)
+            solute_scaling_atoms_dict = process_scaling_input(arguments.solute_scaling_selection,
+                                                              verbosity=arguments.verbose)
             if arguments.solute_scaling_bin == 'rest2':
                 scaling_bin = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'Tools', 'rest2.sh')
             elif arguments.solute_scaling_bin == 'rest1':
@@ -2966,25 +3023,28 @@ if __name__ == '__main__':
                                 msg_verbosity=os_util.verbosity_level.debug, current_verbosity=arguments.verbose)
 
     if arguments.pre_solvated:
-        if index_data is False:
+        index_data = read_index_data(arguments.index, verbosity=arguments.verbose)
+        if not index_data:
             os_util.local_print('Could not read index file {} and you supplied a pre-solvated system. I will generate '
                                 'one automatically using gmx make_ndx. If the script fails, supplying a previously '
                                 'generated index file may help. Note: a "Protein" group is expected in such file.'
                                 ''.format(arguments.index),
                                 msg_verbosity=os_util.verbosity_level.warning, current_verbosity=arguments.verbose)
             make_index(new_index_file=arguments.index, structure_data=arguments.structure,
-                       method=arguments.selection_method, gmx_bin=arguments.gmx_bin_local)
+                       method=arguments.selection_method, gmx_bin=arguments.gmx_bin_local, verbosity=arguments.verbose)
             index_data = read_index_data(arguments.index, verbosity=arguments.verbose)
 
-        receptor_structure_mol = read_md_protein(arguments.structure, last_protein_atom=index_data['Protein'][-1])
+        receptor_structure_mol = read_md_protein(arguments.structure, last_protein_atom=index_data['Protein'][-1],
+                                                 verbosity=arguments.verbose)
     else:
         receptor_structure_mol = pybel.readfile('pdb', arguments.structure).__next__()
 
     ligands_dict = parse_ligands_data(arguments.input_ligands, savestate_util=progress_data,
                                       no_checks=arguments.no_checks, verbosity=arguments.verbose)
 
-    poses_input = parse_poses_data(parse_input_molecules(arguments.poses_input, verbosity=arguments.verbose),
-                                   no_checks=arguments.no_checks, verbosity=arguments.verbose)
+    input_poses = os_util.detect_type(arguments.poses_input, test_for_dict=True, test_for_list=True,
+                                      verbosity=arguments.verbose)
+    poses_input = parse_poses_data(input_poses, no_checks=arguments.no_checks, verbosity=arguments.verbose)
 
     if arguments.poses_advanced_options:
         arguments.poses_advanced_options = os_util.detect_type(arguments.poses_advanced_options, test_for_dict=True)
@@ -3244,23 +3304,27 @@ if __name__ == '__main__':
 
         if arguments.pre_solvated:
             # User provided a pre-solvated structure
-            output_structure_file = os.path.join(base_pert_dir, morph_dir, 'protein', 'FullSystem.pdb')
-            output_topology_file = os.path.join(base_pert_dir, morph_dir, 'protein', 'FullSystem.top')
 
             # Align ligand
-            add_ligand_to_solvated_receptor(merged_data, arguments.structure, output_structure_file,
-                                            index_data, input_topology=arguments.topology,
-                                            output_topology_file=output_topology_file,
-                                            num_protein_chains=arguments.presolvated_protein_chains,
+            add_ligand_to_solvated_receptor(merged_data, arguments.structure,
+                                            output_structure_file=os.path.join(base_pert_dir, morph_dir, 'protein',
+                                                                               'FullSystem.pdb'),
+                                            index_data=index_data, input_topology=arguments.topology,
+                                            output_topology_file=os.path.join(base_pert_dir, morph_dir, 'protein',
+                                                                              'FullSystem.top'),
                                             radius=arguments.presolvated_radius,
                                             selection_method=arguments.selection_method,
                                             verbosity=arguments.verbose)
 
             # FIXME: run genion here to neutralize the system in a case a user supply a system with a different charge
             #  than the sun system (this should be uncommon)
-            make_index(os.path.join(base_pert_dir, morph_dir, 'protein', 'index.ndx'), output_structure_file,
-                       new_index_groups_dict, method=arguments.selection_method, gmx_bin=arguments.gmx_bin_local,
-                       verbosity=arguments.verbose)
+            make_index(new_index_file=os.path.join(base_pert_dir, morph_dir, 'protein', 'index.ndx'),
+                       structure_data=os.path.join(base_pert_dir, morph_dir, 'protein', 'FullSystem.pdb'),
+                       index_data=new_index_groups_dict, method=arguments.selection_method,
+                       gmx_bin=arguments.gmx_bin_local, verbosity=arguments.verbose)
+
+            output_structure_file = 'FullSystem.pdb'
+            output_topology_file = 'FullSystem.top'
 
         else:
             # User wants automatic complex generation
@@ -3291,6 +3355,7 @@ if __name__ == '__main__':
 
             unwanted_files += [os.path.basename(build_data.build_dir)]
             output_structure_file = build_data.structure
+            output_topology_file = build_data.topology
 
         protein_topology_files = [os.path.join(base_pert_dir, morph_dir, 'protein', each_file)
                                   for each_file in os.listdir(os.path.join(base_pert_dir, morph_dir, 'protein'))
@@ -3303,8 +3368,7 @@ if __name__ == '__main__':
         # Prepare water perturbations (this is irrespective of whether user used a pre-solvated system or not)
         water_data = prepare_water_system(dual_molecule_ligand=merged_data,
                                           water_dir=os.path.join(base_pert_dir, morph_dir, 'water'),
-                                          topology_file=arguments.topology,
-                                          solvate_data=solvate_data,
+                                          topology_file=output_topology_file, solvate_data=solvate_data,
                                           protein_topology_files=protein_topology_files,
                                           gmx_maxwarn=arguments.gmx_maxwarn, gmx_bin=arguments.gmx_bin_local,
                                           verbosity=arguments.verbose)
@@ -3397,7 +3461,7 @@ if __name__ == '__main__':
                 dir_mdp_list = [os.path.join(this_basedir, os.path.basename(each_file).replace(".mdp", ""))
                                 for each_file in each_mdplist]
 
-                topology_file = arguments.topology if each_system == 'protein' \
+                topology_file = output_topology_file if each_system == 'protein' \
                     else os.path.basename(water_data['topology'])
                 structure_file = output_structure_file if each_system == 'protein' \
                     else os.path.basename(water_data['structure'])
