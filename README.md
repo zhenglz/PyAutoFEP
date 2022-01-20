@@ -7,13 +7,22 @@ the analysis. Distinctivelly, PyAutoFEP supports multiple force fields, integrat
 Furthermore, it aims to be as flexible as possible, giving the user great control over all steps. Nevertheless, reasonable defaults and automation are 
 provided, so that PyAutoFEP can be used by non experts. PyAutoFEP is written in Python3 and uses GROMACS.
 
+## Announcements
+**Commit fe41f7d (19.01.2022)**<br/>
+This commit introduces a bunch of new features and code changes. Even though I tested newly implemented and rewritten code, **things may break**. Please, fill 
+issues should you experience any problem. Main changes:
+- Modifications to the atom matching functions in PyAutoFEP were done to implement support for user-supplied atom maps.
+- User-supplied atom maps are also available for the superimpose pose loader
+- Selecting 3D MCS for merge_topologies.merge_topologies is now supported (3D MCS in generate_perturbation_map.py and superimpose loader coming soon)
+- 3D MCS code rewritten for better support for ligand pairs with multiple atom matches
+
 ## Requirements
 - Common GNU programs: Bash, awk, tar
 - [GROMACS](https://www.gromacs.org/) 2016 or newer
 - Python 3.6+
 - [rdkit](https://www.rdkit.org/) 2019.03+
 - [networkx](https://networkx.org) 2.X (1.X versions are not supported)
-- [alchemlyb](https://github.com/alchemistry/alchemlyb) 0.3.0 & [pymbar](https://github.com/choderalab/pymbar) 3.0.3 (Because of https://github.com/choderalab/pymbar/issues/419)
+- [alchemlyb](https://github.com/alchemistry/alchemlyb) 0.6.0 & [pymbar](https://github.com/choderalab/pymbar) 3.0.5 OR [alchemlyb](https://github.com/alchemistry/alchemlyb) 0.3.0 & [pymbar](https://github.com/choderalab/pymbar) 3.0.3 (Because of https://github.com/choderalab/pymbar/issues/419)
 - [openbabel](http://openbabel.org/wiki/Main_Page) 2.4 (sparsely used, mainly to load receptor files in *prepare_perturbation_map.py*. openbabel 3.X is not currently not supported, but eventually will)
 - matplotlib (required only in *analyze_results.py*, optional in *generate_perturbation_map.py*)
 - numpy (required only in *analyze_results.py*)
@@ -23,6 +32,7 @@ Optional requirements. The following are not required to run basic calculations 
 - [biopython](https://biopython.org/) (allows sequence alignment when reading initial pose data)
 - [mdanalysis](https://www.mdanalysis.org/) (allows use of atom selection language in some contexts)
 - pytest (required to run Python tests)
+- packaging (used to compare package versions, falling back to distutils)
 
 ## Install
 To install PyAutoFEP, please, clone this repository using
@@ -44,7 +54,7 @@ conda install -c openbabel openbabel # ver 3.X is not supported, make sure to in
 conda install matplotlib networkx pip
 
 # Use pip to install pymbar and alchemlyb
-pip install pymbar==3.0.3 alchemlyb==0.3.0 # Later versions are discouraged
+pip install pymbar alchemlyb==0.6.0
 ```
 
 ## Documentation
